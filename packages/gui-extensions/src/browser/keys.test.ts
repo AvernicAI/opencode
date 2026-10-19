@@ -1,5 +1,20 @@
 import { expect, test } from "bun:test"
-import { pageLetter } from "./keys"
+import { pageLetter, pageShortcut, type PageKey } from "./keys"
+
+/** A key press with `mod` as the platform's modifier: Command on macOS, Control elsewhere. */
+const press = (modifiers: string, key: string, mac: boolean, code = ""): PageKey => {
+  const held = modifiers.split("+")
+  const mod = held.includes("mod")
+
+  return {
+    key,
+    code,
+    control: held.includes("ctrl") || (mod && !mac),
+    meta: mod && mac,
+    shift: held.includes("shift"),
+    alt: held.includes("alt"),
+  }
+}
 
 test.each([
   { layout: "QWERTY", input: { key: "C", code: "KeyC" }, letter: "c" },
@@ -12,4 +27,87 @@ test.each([
   { layout: "QWERTY", input: { key: "=", code: "Equal" }, letter: "=" },
 ])("$layout $input.key on $input.code is $letter", (row) => {
   expect(pageLetter(row.input)).toBe(row.letter)
+})
+
+test("forwards browser and shell shortcuts while leaving page editing, find, reload and in-page chords to the page", () => {
+  const cases: [modifiers: string, key: string, mac: boolean, forwarded: string | undefined, code?: string][] = [
+    // Browser tab, window and shell chords forwarded from the page.
+    ["mod", "t", true, "t"],
+    ["mod", "t", false, "t"],
+    // Dvorak: T is on the physical K key and Y on the physical T key; the character decides.
+    ["mod", "t", true, "t", "KeyK"],
+    ["mod", "y", true, undefined, "KeyT"],
+    ["mod", "w", true, "w"],
+    ["mod", "w", false, "w"],
+    ["mod", "\u0432", true, "w", "KeyW"],
+    ["mod", "n", true, "n"],
+    ["mod", "n", false, "n"],
+    ["mod", "1", true, "1"],
+    ["mod", "9", false, "9"],
+    ["mod", ",", true, ","],
+    ["mod", "\\", false, "\\"],
+    ["mod+shift", "T", true, "t"],
+    ["mod+shift", "W", true, "w"],
+    ["mod+shift", "N", false, "n"],
+    ["mod+shift", "R", true, "r"],
+    ["mod+shift", "R", false, "r"],
+    ["mod+shift", "P", true, "p"],
+    ["mod+shift", "L", true, "l"],
+    ["mod+shift", "E", true, "e"],
+    ["mod+alt", "ArrowLeft", true, "ArrowLeft"],
+    ["mod+alt", "ArrowRight", false, "ArrowRight"],
+    ["ctrl", "Tab", true, "Tab"],
+    ["ctrl+shift", "Tab", false, "Tab"],
+    ["ctrl", "`", true, "`"],
+    ["ctrl", "`", false, "`"],
+    // In-page editor chords (link/command menu, bold, italic, save) stay with the page.
+    ["mod", "k", true, undefined],
+    ["mod", "k", false, undefined],
+    ["mod", "b", true, undefined],
+    ["mod", "i", true, undefined],
+    ["mod", "s", true, undefined],
+    // Clipboard, select all, undo and redo stay with the page.
+    ["mod", "c", true, undefined],
+    ["mod", "x", true, undefined],
+    ["mod", "v", true, undefined],
+    ["mod+shift", "V", true, undefined],
+    ["mod", "a", true, undefined],
+    ["mod", "z", true, undefined],
+    ["mod+shift", "Z", true, undefined],
+    ["mod", "c", false, undefined],
+    ["mod", "v", false, undefined],
+    ["mod", "a", false, undefined],
+    ["mod", "z", false, undefined],
+    ["mod", "y", false, undefined],
+    // Find, reload, history, and the pane's own address, picker and zoom chords.
+    ["mod", "f", true, undefined],
+    ["mod", "g", true, undefined],
+    ["mod+shift", "G", true, undefined],
+    ["mod", "r", true, undefined],
+    ["mod", "r", false, undefined],
+    ["mod", "[", true, undefined],
+    ["mod", "]", true, undefined],
+    ["mod", "l", true, undefined],
+    ["mod+shift", "C", true, undefined],
+    ["mod", "=", true, undefined],
+    ["mod", "-", true, undefined],
+    ["mod", "0", false, undefined],
+    // Caret movement, macOS Control keys, and plain typing.
+    ["mod", "ArrowLeft", true, undefined],
+    ["mod+shift", "ArrowRight", false, undefined],
+    ["mod", "Backspace", false, undefined],
+    ["ctrl", "b", true, undefined],
+    ["ctrl+shift", "E", true, undefined],
+    ["", "k", true, undefined],
+    ["shift", "Tab", true, undefined],
+  ]
+
+  const results = cases.map(([modifiers, key, mac, , code]) => [
+    modifiers,
+    key,
+    mac,
+    pageShortcut(press(modifiers, key, mac, code), mac)?.key,
+  ])
+
+  expect(results).toEqual(cases.map(([modifiers, key, mac, forwarded]) => [modifiers, key, mac, forwarded]))
 })

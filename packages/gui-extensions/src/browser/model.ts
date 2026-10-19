@@ -10,6 +10,7 @@ import {
   type Connection,
   type InspectEvent,
   type Registration,
+  type ShortcutEvent,
   type Zoom,
 } from "./connection"
 import { recordable, remember, withIcon } from "./history"
@@ -64,6 +65,8 @@ type PaneHandle = {
   inspect: () => void
   /** Focuses the address field and selects its text. */
   focusAddress: () => void
+  /** Runs a key press the page handed to the app, as if it was pressed in this pane. */
+  press: (event: ShortcutEvent) => void
 }
 
 export type Model = ReturnType<typeof createModel>
@@ -214,6 +217,10 @@ export function createModel(ctx: SetupContext<typeof definition>) {
           if (visits) history.set({ visits })
         },
         address: (tabID) => addressed.get(id)?.forEach((listener) => listener(tabID)),
+        // Only the pane on screen holds the page that had focus.
+        shortcut: (event) => {
+          if (sessions.current()?.key === id) panes()[0]?.press(event)
+        },
         change: (next, mirror, native) => {
           if (next.error === "browser.pane.unsupported") {
             setState("unsupported", ref.server.id, true)

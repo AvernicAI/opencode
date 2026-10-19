@@ -7,7 +7,7 @@ import { createCdp, abortError, waitFor } from "./cdp"
 import { createBrowserFiles } from "./files"
 import { createDiagnostics } from "./diagnostics"
 import { loadIcon } from "./icon"
-import { pageLetter } from "./keys"
+import { pageLetter, pageShortcut, type PageShortcut } from "./keys"
 import { createProfiling, type Recording } from "./profiling"
 import type { BrowserNetwork } from "./network"
 import {
@@ -137,6 +137,8 @@ export function createBrowserPage(
     zoomed?: () => void
     /** The user pressed the address shortcut while the page had focus. */
     address?: () => void
+    /** Hands a browser or shell shortcut to the app window. */
+    shortcut?: (shortcut: PageShortcut) => void
     fail: () => void
     /** Adopts a page the document opened; a background one leaves the current tab selected. */
     popup: (options: Electron.BrowserWindowConstructorOptions, background: boolean) => WebContents
@@ -186,6 +188,15 @@ export function createBrowserPage(
     if (input.key === "Escape" && inspecting) {
       event.preventDefault()
       void toggleInspect(false)
+
+      return
+    }
+
+    const shortcut = pageShortcut(input, process.platform === "darwin")
+
+    if (shortcut) {
+      event.preventDefault()
+      options.shortcut?.(shortcut)
 
       return
     }

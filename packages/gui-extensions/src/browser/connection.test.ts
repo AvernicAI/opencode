@@ -111,6 +111,7 @@ function fixture(strip: string[] = []) {
     inspect: (event) => routed.inspect.push(event),
     page: () => undefined,
     address: () => undefined,
+    shortcut: () => undefined,
   })
 
   const emit = (index: number, event: PaneEvent) => listeners.get(calls[index].input.binding)?.(event)

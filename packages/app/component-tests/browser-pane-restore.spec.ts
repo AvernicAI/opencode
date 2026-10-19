@@ -81,7 +81,7 @@ story.beforeEach(async ({ mount, page }) => {
             })
           },
         }),
-      Commands: (props: { close: () => void }) => {
+      Commands: (props: { close: () => void; review: () => void }) => {
         const command = commands.useCommand()
         const extensions = host.useExtensionHost()
         command.register("fixture-session", () => [
@@ -90,6 +90,12 @@ story.beforeEach(async ({ mount, page }) => {
             title: "Close session tab",
             keybind: "mod+w",
             onSelect: props.close,
+          },
+          {
+            id: "review.toggle",
+            title: "Toggle review",
+            keybind: "mod+shift+r",
+            onSelect: props.review,
           },
         ])
         // Storybook aliases the app's command hook to a no-op. Bridge the real extension contributions
@@ -183,6 +189,35 @@ story("toggles the element picker from the shortcut only inside the browser pane
   await expect(root.getByTestId("browser-inspects")).toHaveText(
     '[{"tabID":"tab_33333333-3333-3333-3333-333333333333","enabled":true},{"tabID":"tab_33333333-3333-3333-3333-333333333333","enabled":false}]',
   )
+})
+
+story("keeps in-page shortcuts like ⌘K in the page while forwarding ⌘⇧R and ⌘W to the pane", async ({ page }) => {
+  const root = page.getByTestId("browser-region-fixture")
+  const mac = await page.evaluate(() => /Mac|iPhone|iPad|iPod/.test(navigator.platform))
+  const mod = mac ? "Meta" : "Control"
+
+  const editor = page
+    .frameLocator('iframe[title="Browser page"]')
+    .getByRole("textbox", { name: "Editor page input", exact: true })
+
+  await expect(root.getByText("Registrations: 1", { exact: true })).toBeVisible()
+  await root.getByRole("button", { name: "Beta", exact: true }).click()
+  await expect(root.getByText("Registrations: 2", { exact: true })).toBeVisible()
+  await root.getByRole("button", { name: "First inventory", exact: true }).click()
+  await expect(root.getByRole("tab", { name: "Preview", exact: true })).toHaveAttribute("aria-selected", "true")
+
+  // In-page shortcuts like ⌘K stay with the focused page.
+  await editor.focus()
+  await editor.press(`${mod}+k`)
+  await expect(editor).toHaveValue("handled:k")
+
+  // Shell shortcuts like ⌘⇧R and pane-scoped ⌘W are claimed before the page sees them.
+  await editor.press(`${mod}+Shift+r`)
+  await expect(root.getByTestId("review-toggles")).toHaveText("1")
+  await editor.press(`${mod}+w`)
+  await expect(editor).toHaveValue("handled:k")
+  await expect(root.getByTestId("browser-closes")).toHaveText('["tab_33333333-3333-3333-3333-333333333333"]')
+  await expect(root.getByTestId("session-state")).toHaveText("open")
 })
 
 story("keeps a restored browser tab selected and undrawn until the desktop's first inventory", async ({ page }) => {

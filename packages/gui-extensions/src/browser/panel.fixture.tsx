@@ -49,6 +49,7 @@ import type definition from "./index"
 import { createModel } from "./model"
 import SessionBrowserPane from "./panel"
 import { BrowserPane, type PaneEvent } from "./ipc"
+import { pageShortcut } from "./keys"
 import { refusal } from "./policy"
 
 /** The renderer host pieces the pane runs on, passed in by `packages/app/component-tests/browser-pane.spec.ts`. */
@@ -600,7 +601,7 @@ type RegionHost = {
   /** Real shell command providers for shortcut cases. */
   Shell: ParentComponent
   /** Shell fallback and the real extension command adapter. */
-  Commands: Component<{ close: () => void }>
+  Commands: Component<{ close: () => void; review: () => void }>
   /** The real host wrapper that renders an extension in its context. */
   Contribution: Component<{ extension: string; children: () => JSX.Element }>
 }
@@ -614,6 +615,8 @@ type RegionFixtureState = {
   away: boolean
   /** Whether the fixture's shell session was closed by its fallback shortcut. */
   closed: boolean
+  /** How many times the review side panel toggled from a shortcut. */
+  reviews: number
   /** The page main reports, blank or loaded. */
   blank: boolean
   /** Native browser tab close requests, by tab id. */
@@ -645,6 +648,7 @@ export function mountBrowserRegion(input: RegionHost) {
       registrations: [],
       away: false,
       closed: false,
+      reviews: 0,
       blank: false,
       closes: [],
       inspects: [],
@@ -877,6 +881,39 @@ export function mountBrowserRegion(input: RegionHost) {
       )
     }
 
+    // Wires an embedded page with the same before-input-event shortcut interception as chromium.ts.
+    const wirePage = (frame: HTMLIFrameElement) => {
+      const win = frame.contentWindow
+
+      if (!win) return
+      const mac = /(Mac|iPod|iPhone|iPad)/.test(navigator.platform)
+
+      win.addEventListener(
+        "keydown",
+        (event) => {
+          const shortcut = pageShortcut(
+            {
+              key: event.key,
+              code: event.code,
+              control: event.ctrlKey,
+              meta: event.metaKey,
+              shift: event.shiftKey,
+              alt: event.altKey,
+            },
+            mac,
+          )
+
+          const binding = latest()?.binding
+
+          if (!shortcut || !binding) return
+          event.preventDefault()
+          event.stopImmediatePropagation()
+          listeners.forEach((listener) => listener({ binding, event: { type: "shortcut", ...shortcut } }))
+        },
+        true,
+      )
+    }
+
     // Mounts once every extension is active, as the session screen does.
     function Strip() {
       const region = input.createRegion({
@@ -970,7 +1007,10 @@ export function mountBrowserRegion(input: RegionHost) {
             }}
             ipc={(token) => (token.id === BrowserPane.id && !store.away ? pane : undefined)}
           >
-            <input.Commands close={() => setStore("closed", true)} />
+            <input.Commands
+              close={() => setStore("closed", true)}
+              review={() => setStore("reviews", (count) => count + 1)}
+            />
             <h1 style={{ "font-size": "24px", "margin-bottom": "16px" }}>Restored side strip</h1>
             <nav style={{ display: "flex", gap: "12px", margin: "16px 0" }}>
               <button onClick={() => setStore({ session: beta, closed: false })}>Beta</button>
@@ -993,10 +1033,17 @@ export function mountBrowserRegion(input: RegionHost) {
               <button onClick={() => setStore("away", true)}>Pane away</button>
               <button onClick={() => setStore("away", false)}>Pane back</button>
             </nav>
+            <iframe
+              title="Browser page"
+              srcdoc='<!doctype html><input aria-label="Editor page input" onkeydown="if ((event.ctrlKey || event.metaKey) &amp;&amp; /^[kw]$/i.test(event.key)) { event.preventDefault(); this.value = &apos;handled:&apos; + event.key.toLowerCase() }" />'
+              onLoad={(event) => wirePage(event.currentTarget)}
+              style={{ height: "48px" }}
+            />
             <p>Registrations: {store.registrations.length}</p>
             <p>Beta restores: {latest()?.restore ?? 0}</p>
             <p data-testid="tree">{JSON.stringify(tree())}</p>
             <p data-testid="session-state">{store.closed ? "closed" : "open"}</p>
+            <p data-testid="review-toggles">{store.reviews}</p>
             <p data-testid="browser-closes">{JSON.stringify(store.closes)}</p>
             <p data-testid="browser-inspects">{JSON.stringify(store.inspects)}</p>
             <Ready>

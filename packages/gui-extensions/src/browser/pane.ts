@@ -506,6 +506,13 @@ export function createBrowserPane(input: {
         entry.win.webContents.focus()
         publish(entry, { type: "address", tabID: id })
       },
+      shortcut: (shortcut) => {
+        if (!entry.pages.has(id) || entry.focusedTabID !== id || entry.win.isDestroyed()) return
+
+        // As for the address shortcut: the command runs in the app, which may move focus there.
+        if (entry.win.isFocused()) entry.win.webContents.focus()
+        publish(entry, { type: "shortcut", ...shortcut })
+      },
       popup: (popupOptions, background) => {
         const popup = create(entry, false, popupOptions)
 
