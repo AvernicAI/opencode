@@ -188,14 +188,30 @@ export class PatchmarkStream {
   /** Declarative update: prefix appends are incremental; anything else re-parses and patches the difference */
   update(text: string, opts: { streaming?: boolean } = {}): StreamFrame {
     const streaming = opts.streaming ?? true
-    if (this.finished || !text.startsWith(this.text)) {
+    if (this.finished || !this.hasPrefix(text)) {
       if (this.finished && text === this.text) return this.emptyFrame()
       return this.rebuild(text, streaming)
     }
-    if (text === this.text && streaming && this.blocks.length > 0) return this.emptyFrame()
+    if (text.length === this.text.length && streaming && this.blocks.length > 0) return this.emptyFrame()
     this.partial += text.slice(this.text.length)
     this.text = text
     return this.step(streaming)
+  }
+
+  private hasPrefix(text: string): boolean {
+    const prev = this.text
+    const len = prev.length
+    if (len === 0) return true
+    if (text.length < len) return false
+    if (len <= 4096) return text.startsWith(prev)
+    if (text.slice(len - 512, len) !== prev.slice(len - 512, len)) return false
+    if (text.slice(0, 512) !== prev.slice(0, 512)) return false
+    const stride = (len - 512) >> 3
+    for (let i = 1; i < 8; i++) {
+      const at = i * stride
+      if (text.slice(at, at + 64) !== prev.slice(at, at + 64)) return false
+    }
+    return true
   }
 
   private emptyFrame(): StreamFrame {
@@ -783,8 +799,32 @@ export class PatchmarkStream {
       }
       case "list": {
         const ld = node.listData!
-        const items: ListItemNode[] = []
-        for (const item of node.children) items.push(this.convertItemCached(item, ctx))
+        const version = ctx.cacheable ? ctx.refmap.size : -1
+        const memo = node.listMemo
+        if (version < 0 || memo.version !== version) {
+          memo.version = version
+          memo.items = []
+          memo.count = 0
+          memo.used = new Set()
+          memo.unresolved = new Set()
+        }
+        const ch = node.children
+        let closedPrefix = ch.length
+        while (closedPrefix > 0 && (ch[closedPrefix - 1]!.open || ch[closedPrefix - 1]!.forked)) closedPrefix--
+        if (memo.count > closedPrefix) {
+          memo.items.length = closedPrefix
+          memo.count = closedPrefix
+        }
+        for (let i = memo.count; i < closedPrefix; i++) {
+          memo.items.push(this.convertItemCached(ch[i]!, { ...ctx, used: memo.used, unresolved: memo.unresolved }))
+          memo.count = i + 1
+        }
+        for (const label of memo.used) ctx.used.add(label)
+        for (const label of memo.unresolved) ctx.unresolved.add(label)
+        const items = (memo.items as ListItemNode[]).slice()
+        for (let i = closedPrefix; i < ch.length; i++) {
+          items.push(this.convertItemCached(ch[i]!, ctx))
+        }
         return {
           type: "list",
           ordered: ld.type === "ordered",
@@ -801,31 +841,43 @@ export class PatchmarkStream {
       case "table": {
         const width = node.header.length
         const version = ctx.cacheable ? ctx.refmap.size : -1
-        const cells = (key: string, split: string[], cacheable: boolean): InlineNode[][] => {
-          const hit = cacheable && version >= 0 ? node.rowCache.get(key) : undefined
-          if (hit && hit.version === version) {
-            for (const label of hit.used) ctx.used.add(label)
-            for (const label of hit.unresolved) ctx.unresolved.add(label)
-            return hit.cells as InlineNode[][]
-          }
-          const sub: ConvertContext = { ...ctx, used: new Set(), unresolved: new Set() }
+        const memo = node.tableMemo
+        if (version < 0 || memo.version !== version) {
+          memo.version = version
+          memo.headers = null
+          memo.rows = []
+          memo.rawRows = []
+          memo.used = new Set()
+          memo.unresolved = new Set()
+        }
+        const parseRow = (split: string[], targetUsed: Set<string>, targetUnresolved: Set<string>): InlineNode[][] => {
+          const sub: ConvertContext = { ...ctx, used: targetUsed, unresolved: targetUnresolved }
           const row: InlineNode[][] = []
           for (let c = 0; c < width; c++) row.push(c < split.length ? this.inlines(unescapePipes(split[c]!), sub) : [])
-          if (cacheable && version >= 0) {
-            node.rowCache.set(key, { version, cells: row, used: [...sub.used], unresolved: [...sub.unresolved] })
-          }
-          for (const label of sub.used) ctx.used.add(label)
-          for (const label of sub.unresolved) ctx.unresolved.add(label)
           return row
         }
-        const headers = cells("\u0000header", node.header, true)
-        const rows: InlineNode[][][] = []
-        for (let r = 0; r < node.rows.length; r++) {
-          let rowText = node.rows[r]!
-          const healRow = healHere && r === node.rows.length - 1
-          if (healRow) rowText = applyTailHeal(rowText, ctx.heal!)
-          const hit = healRow ? undefined : node.rowCache.get(rowText)
-          rows.push(cells(rowText, hit && hit.version === version ? [] : splitTableRow(rowText), !healRow))
+        if (!memo.headers) {
+          memo.headers = parseRow(node.header, memo.used, memo.unresolved)
+        }
+        const headers = memo.headers as InlineNode[][]
+        const stableCount = healHere && node.rows.length > 0 ? node.rows.length - 1 : node.rows.length
+        let common = Math.min(memo.rows.length, stableCount)
+        while (common > 0 && memo.rawRows[common - 1] !== node.rows[common - 1]) common--
+        if (common < memo.rows.length) {
+          memo.rows.length = common
+          memo.rawRows.length = common
+        }
+        for (let r = common; r < stableCount; r++) {
+          const rowText = node.rows[r]!
+          memo.rawRows.push(rowText)
+          memo.rows.push(parseRow(splitTableRow(rowText), memo.used, memo.unresolved))
+        }
+        for (const label of memo.used) ctx.used.add(label)
+        for (const label of memo.unresolved) ctx.unresolved.add(label)
+        const rows = (memo.rows as InlineNode[][][]).slice()
+        if (stableCount < node.rows.length) {
+          const rowText = applyTailHeal(node.rows[node.rows.length - 1]!, ctx.heal!)
+          rows.push(parseRow(splitTableRow(rowText), ctx.used, ctx.unresolved))
         }
         return { type: "table", align: node.align, headers, rows }
       }

@@ -52,6 +52,24 @@ export class BNode {
   rows: string[] = []
   /** parsed table cells per row (shared with forks), keyed by the row text and the refmap version */
   rowCache: Map<string, { version: number; cells: unknown; used: string[]; unresolved: string[] }> = new Map()
+  /** shared memo across forks of an open table so streaming flushes only convert newly added rows */
+  tableMemo: {
+    version: number
+    headers: unknown[] | null
+    rows: unknown[]
+    rawRows: string[]
+    used: Set<string>
+    unresolved: Set<string>
+  } = { version: -1, headers: null, rows: [], rawRows: [], used: new Set(), unresolved: new Set() }
+  /** shared memo across forks of an open list so streaming flushes only convert newly closed/open items */
+  listMemo: {
+    version: number
+    items: unknown[]
+    count: number
+    used: Set<string>
+    unresolved: Set<string>
+    tightChecked: number
+  } = { version: -1, items: [], count: 0, used: new Set(), unresolved: new Set(), tightChecked: 0 }
   mathDelimiter = ""
   mathClosed = false
   mathLines = 0
@@ -59,6 +77,7 @@ export class BNode {
   lastLineCannotHeadTable = false
   /** created or cloned by a throwaway fork (never cached) */
   forked = false
+  rowsCloned = false
   /** monotonically increasing identity, stable across forks of the same logical node */
   serial: number
 
@@ -72,10 +91,10 @@ export class BNode {
     return this.children[this.children.length - 1]
   }
 
-  shallowClone(): BNode {
+  shallowClone(cloneChildren = true): BNode {
     const copy = new BNode(this.type, this.startLine, this.serial)
     copy.parent = this.parent
-    copy.children = this.children.slice()
+    copy.children = cloneChildren ? this.children.slice() : []
     copy.open = this.open
     copy.endLine = this.endLine
     copy.content = this.content
@@ -91,8 +110,10 @@ export class BNode {
     copy.defsOnly = this.defsOnly
     copy.align = this.align
     copy.header = this.header
-    copy.rows = this.type === "table" ? this.rows.slice() : this.rows
+    copy.rows = this.rows
     copy.rowCache = this.rowCache
+    copy.tableMemo = this.tableMemo
+    copy.listMemo = this.listMemo
     copy.mathDelimiter = this.mathDelimiter
     copy.mathClosed = this.mathClosed
     copy.mathLines = this.mathLines
@@ -227,6 +248,7 @@ export class BlockParser {
   }
 
   forkMode = false
+  refmapCloned = false
 
   newNode(type: BlockType, startLine: number): BNode {
     const node = new BNode(type, startLine, this.serialCounter.n++)
@@ -241,16 +263,15 @@ export class BlockParser {
   fork(): BlockParser {
     const f = new BlockParser(this.options, this.disallowMath, this.serialCounter)
     f.lineNumber = this.lineNumber
-    f.refmap = this.refmap.size > 0 ? new Map(this.refmap) : f.refmap
+    f.refmap = this.refmap
     f.forkMode = true
-    const doc = this.doc.shallowClone()
-    doc.children = []
+    const doc = this.doc.shallowClone(false)
     f.doc = doc
     let src = this.doc
     let dst = doc
     while (src !== this.tip) {
       const child = src.lastChild!
-      const copy = child.shallowClone()
+      const copy = child.shallowClone(child.children.length > 0)
       copy.parent = dst
       if (dst === doc) doc.children = [copy]
       else dst.children[dst.children.length - 1] = copy
@@ -437,7 +458,8 @@ export class BlockParser {
     switch (block.type) {
       case "list": {
         const items = block.children
-        outer: for (let i = 0; i < items.length; i++) {
+        const start = block.listData!.tight ? Math.max(0, block.listMemo.tightChecked - 1) : items.length
+        outer: for (let i = start; i < items.length; i++) {
           const item = items[i]!
           if (i + 1 < items.length && endsWithBlankLine(item, items[i + 1])) {
             block.listData!.tight = false
@@ -450,6 +472,9 @@ export class BlockParser {
               break outer
             }
           }
+        }
+        if (block.listData!.tight && items.length > 1 && !block.forked) {
+          block.listMemo.tightChecked = Math.max(block.listMemo.tightChecked, items.length - 1)
         }
         block.endLine = block.lastChild!.endLine
         break
@@ -501,6 +526,10 @@ export class BlockParser {
   }
 
   parseRef(s: string, startLine: number): number {
+    if (this.forkMode && !this.refmapCloned) {
+      this.refmap = new Map(this.refmap)
+      this.refmapCloned = true
+    }
     const before = this.refmap.size
     const pos = parseReference(s, this.refmap)
     if (pos && this.refmap.size > before) {
@@ -822,7 +851,13 @@ export class BlockParser {
       const t = container.type
       if (this.acceptsLines(t)) {
         if (t === "table") {
-          if (this.lineNumber > container.startLine + 1) container.rows.push(ln.slice(this.offset))
+          if (this.lineNumber > container.startLine + 1) {
+            if (container.forked && !container.rowsCloned) {
+              container.rows = container.rows.slice()
+              container.rowsCloned = true
+            }
+            container.rows.push(ln.slice(this.offset))
+          }
         } else {
           if (t === "paragraph") container.lastLineCannotHeadTable = this.indented
           this.addLine()

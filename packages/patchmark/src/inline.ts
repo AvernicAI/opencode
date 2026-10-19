@@ -247,6 +247,7 @@ class InlineParser {
   gfm = false
   math = false
   reMain = reMainCore
+  tickRuns: Map<number, number[]> | null = null
   onUnresolvedRef?: (label: string) => void
   onUsedRef?: (label: string) => void
 
@@ -272,11 +273,17 @@ class InlineParser {
     const ticks = this.match(reTicksHere)
     if (ticks === null) return false
     const afterOpenTicks = this.pos
-    let matched: string | null
-    while ((matched = this.match(reTicks)) !== null) {
-      if (matched === ticks) {
+    const len = ticks.length
+    if (this.tickRuns === null) {
+      const first = this.match(reTicks)
+      if (first === null) {
+        this.pos = afterOpenTicks
+        block.appendChild(text(ticks))
+        return true
+      }
+      if (first.length === len) {
         const node = new INode("code")
-        const contents = this.subject.slice(afterOpenTicks, this.pos - ticks.length).replace(/\n/gm, " ")
+        const contents = this.subject.slice(afterOpenTicks, this.pos - len).replace(/\n/gm, " ")
         if (contents.length > 0 && /[^ ]/.test(contents) && contents[0] === " " && contents[contents.length - 1] === " ") {
           node.literal = contents.slice(1, contents.length - 1)
         } else {
@@ -284,6 +291,33 @@ class InlineParser {
         }
         block.appendChild(node)
         return true
+      }
+      const map = new Map<number, number[]>()
+      map.set(first.length, [this.pos])
+      let m: string | null
+      while ((m = this.match(reTicks)) !== null) {
+        let list = map.get(m.length)
+        if (!list) map.set(m.length, (list = []))
+        list.push(this.pos)
+      }
+      this.tickRuns = map
+    }
+    const candidates = this.tickRuns.get(len)
+    if (candidates) {
+      for (let i = 0; i < candidates.length; i++) {
+        const endPos = candidates[i]!
+        if (endPos - len >= afterOpenTicks) {
+          this.pos = endPos
+          const node = new INode("code")
+          const contents = this.subject.slice(afterOpenTicks, endPos - len).replace(/\n/gm, " ")
+          if (contents.length > 0 && /[^ ]/.test(contents) && contents[0] === " " && contents[contents.length - 1] === " ") {
+            node.literal = contents.slice(1, contents.length - 1)
+          } else {
+            node.literal = contents
+          }
+          block.appendChild(node)
+          return true
+        }
       }
     }
     this.pos = afterOpenTicks
@@ -681,7 +715,10 @@ class InlineParser {
       if (!isImage) {
         opener = this.brackets
         while (opener !== null) {
-          if (!opener.image) opener.active = false
+          if (!opener.image) {
+            if (!opener.active) break
+            opener.active = false
+          }
           opener = opener.previous
         }
       }
@@ -857,6 +894,7 @@ class InlineParser {
     this.pos = 0
     this.delimiters = null
     this.brackets = null
+    this.tickRuns = null
     while (this.parseInline(root)) {}
     this.processEmphasis(null)
     return root
