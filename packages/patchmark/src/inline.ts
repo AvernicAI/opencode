@@ -19,14 +19,9 @@ export type RefMap = Map<string, ReferenceDef>
 export interface InlineParseOptions {
   gfm?: boolean
   math?: boolean
-  /** Kept for API compatibility; healing now happens on block content before inline parsing */
-  streaming?: boolean
-  heal?: boolean
   defs?: ReadonlyMap<string, ReferenceDef>
-  /** Called with the normalized label of every reference lookup that found no definition */
-  onUnresolvedRef?: (label: string) => void
-  /** Called with the normalized label of every reference lookup that resolved */
-  onUsedRef?: (label: string) => void
+  unresolvedRefs?: Set<string>
+  usedRefs?: Set<string>
 }
 
 const C_NEWLINE = 10
@@ -100,10 +95,6 @@ const reMainGfmMath = /[^\n`[\]\\!<&*_'"~$]+/y
 const reInlineDollarMath =
   /\$\$(?!\$)((?:\\.|[^\\\n])*?(?:\\.|[^\\\n$]))\$\$|\$(?=[^\s$])((?:\\.|[^\\\n$])*?(?:\\\S|[^\s\\$]))\$(?!\w)/y
 const reInlineParenMath = /\\\(((?:\\.|[^\\\n])*?)\\\)/y
-
-const FILE_PATH_RE =
-  /^(?:\.{0,2}\/)?(?:[\w.@+-]+\/)+[\w.@+-]+\.[a-zA-Z0-9]{1,10}(?::\d+(?:-\d+)?)?$|^[A-Za-z0-9_.-]+\.(?:swift|ts|tsx|js|jsx|rs|py|go|md|json|yml|yaml|toml|sh|css|html)(?::\d+(?:-\d+)?)?$/
-const URL_RE = /^https?:\/\/[^\s<>()`"']+$/
 
 type NodeType =
   | "text"
@@ -248,8 +239,8 @@ class InlineParser {
   math = false
   reMain = reMainCore
   tickRuns: Map<number, number[]> | null = null
-  onUnresolvedRef?: (label: string) => void
-  onUsedRef?: (label: string) => void
+  unresolvedRefs?: Set<string>
+  usedRefs?: Set<string>
 
   /** `re` must be sticky (anchored at `pos`) or global (searching forward from `pos`) */
   match(re: RegExp): string | null {
@@ -436,15 +427,6 @@ class InlineParser {
     return { numdelims, canOpen, canClose }
   }
 
-  charBefore(pos: number): string {
-    const code = this.subject.charCodeAt(pos - 1)
-    if (code >= 0xdc00 && code <= 0xdfff && pos >= 2) {
-      const high = this.subject.charCodeAt(pos - 2)
-      if (high >= 0xd800 && high <= 0xdbff) return this.subject.slice(pos - 2, pos)
-    }
-    return this.subject.charAt(pos - 1)
-  }
-
   handleDelim(cc: number, block: INode): boolean {
     const res = this.scanDelims(cc)
     if (!res) return false
@@ -477,6 +459,7 @@ class InlineParser {
   }
 
   processEmphasis(stackBottom: Delimiter | null) {
+    if (this.delimiters === stackBottom) return
     const openersBottom: (Delimiter | null)[] = []
     for (let i = 0; i < 16; i++) openersBottom[i] = stackBottom
 
@@ -635,8 +618,8 @@ class InlineParser {
   lookupRef(label: string): ReferenceDef | undefined {
     const norm = normalizeReference(label)
     const def = this.refmap.get(norm)
-    if (def) this.onUsedRef?.(norm)
-    else if (norm) this.onUnresolvedRef?.(norm)
+    if (def) this.usedRefs?.add(norm)
+    else if (norm) this.unresolvedRefs?.add(norm)
     return def
   }
 
@@ -902,6 +885,7 @@ class InlineParser {
 }
 
 const sharedParser = new InlineParser()
+const EMPTY_REFMAP: ReadonlyMap<string, ReferenceDef> = new Map()
 
 /** Parse a link reference definition at the start of `s` into `refmap`; returns the number of characters consumed */
 export function parseReference(s: string, refmap: RefMap): number {
@@ -916,12 +900,12 @@ export function parseInlines(raw: string, options: InlineParseOptions = {}): Inl
   if (!isSpecialFastPath(src, gfm, math)) return [{ type: "text", text: src }]
 
   const p = sharedParser
-  p.refmap = options.defs ?? new Map()
+  p.refmap = options.defs ?? EMPTY_REFMAP
   p.gfm = gfm
   p.math = math
   p.reMain = gfm ? (math ? reMainGfmMath : reMainGfm) : math ? reMainMath : reMainCore
-  p.onUnresolvedRef = options.onUnresolvedRef
-  p.onUsedRef = options.onUsedRef
+  p.unresolvedRefs = options.unresolvedRefs
+  p.usedRefs = options.usedRefs
   const root = p.parse(src)
   return convertChildren(root, gfm, false)
 }
@@ -968,19 +952,11 @@ function convertChildren(parent: INode, gfm: boolean, inLink: boolean): InlineNo
         out.push({ type: "br" })
         prevChar = "\n"
         break
-      case "code": {
+      case "code":
         flush()
-        const isUrl = URL_RE.test(n.literal)
-        const isFilePath = !isUrl && FILE_PATH_RE.test(n.literal)
-        out.push({
-          type: "code",
-          text: n.literal,
-          ...(isUrl ? { isUrl: true } : {}),
-          ...(isFilePath ? { isFilePath: true } : {}),
-        })
+        out.push({ type: "code", text: n.literal })
         prevChar = "`"
         break
-      }
       case "emph":
         flush()
         out.push({ type: "em", children: convertChildren(n, gfm, inLink) })

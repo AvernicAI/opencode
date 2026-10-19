@@ -70,6 +70,22 @@ export function computeTailHeal(input: string): TailHeal {
   let codeOpen: { len: number; start: number } | null = null
   let wordHadEm = false
   const stack: Open[] = []
+  let stars = 0
+  let underscores = 0
+  let tildes = 0
+  const push = (open: Open) => {
+    if (open.ch === 0x2a) stars++
+    else if (open.ch === 0x5f) underscores++
+    else tildes++
+    stack.push(open)
+  }
+  const pop = () => {
+    const open = stack.pop()!
+    if (open.ch === 0x2a) stars--
+    else if (open.ch === 0x5f) underscores--
+    else tildes--
+  }
+  const hasOpen = (ch: number) => (ch === 0x2a ? stars : ch === 0x5f ? underscores : tildes) > 0
   let i = 0
   while (i < n) {
     const c = text.charCodeAt(i)
@@ -136,17 +152,14 @@ export function computeTailHeal(input: string): TailHeal {
       let remaining = run
       if (canClose) {
         while (remaining > 0 && stack.length > 0) {
-          const top = stack[stack.length - 1]!
-          if (top.ch !== c) {
-            // only close through a different marker if it was opened after this one's opener
-            const idx = findLast(stack, c)
-            if (idx < 0) break
-            stack.length = idx + 1
-            continue
+          if (stack[stack.length - 1]!.ch !== c) {
+            if (!hasOpen(c)) break
+            while (stack[stack.length - 1]!.ch !== c) pop()
           }
+          const top = stack[stack.length - 1]!
           if (top.len <= remaining) {
             remaining -= top.len
-            stack.pop()
+            pop()
           } else {
             top.len -= remaining
             remaining = 0
@@ -155,12 +168,12 @@ export function computeTailHeal(input: string): TailHeal {
       }
       if (remaining > 0 && canOpen) {
         if (c === 0x7e) {
-          stack.push({ ch: c, len: remaining, after: i + run, start: i + (run - remaining) })
+          push({ ch: c, len: remaining, after: i + run, start: i + (run - remaining) })
         } else if (remaining >= 3) {
-          stack.push({ ch: c, len: 2, after: i + run, start: i + (run - remaining) })
-          stack.push({ ch: c, len: 1, after: i + run, start: i + (run - remaining) + 2 })
+          push({ ch: c, len: 2, after: i + run, start: i + (run - remaining) })
+          push({ ch: c, len: 1, after: i + run, start: i + (run - remaining) + 2 })
         } else {
-          stack.push({ ch: c, len: remaining, after: i + run, start: i + (run - remaining) })
+          push({ ch: c, len: remaining, after: i + run, start: i + (run - remaining) })
         }
       }
       i += run
@@ -172,10 +185,10 @@ export function computeTailHeal(input: string): TailHeal {
   let strip = 0
   let append = ""
   let codeClosed = false
+  let nonSpaceEnd = rtrimLength(text)
 
   if (codeOpen) {
-    const content = text.slice(codeOpen.start + codeOpen.len)
-    if (content.trim().length === 0) {
+    if (codeOpen.start + codeOpen.len >= nonSpaceEnd) {
       strip = n - codeOpen.start
     } else {
       append += "`".repeat(codeOpen.len)
@@ -185,19 +198,27 @@ export function computeTailHeal(input: string): TailHeal {
 
   // Close (innermost first) markers that have content after them; drop trailing markers that have none.
   let limit = n - strip
+  if (nonSpaceEnd > limit) {
+    nonSpaceEnd = limit
+    while (nonSpaceEnd > 0 && isSpace(text.charCodeAt(nonSpaceEnd - 1))) nonSpaceEnd--
+  }
   for (let s = stack.length - 1; s >= 0; s--) {
     const open = stack[s]!
     if (open.start >= limit) continue
-    const after = text.slice(open.after, limit)
-    if (append === "" && after.trim().length === 0) {
-      // dangling opener at the end: hide it (and the whitespace before it)
-      let cut = open.start
-      while (cut > 0 && (text.charCodeAt(cut - 1) === 0x20 || text.charCodeAt(cut - 1) === 0x09)) cut--
-      strip = n - cut
-      limit = cut
+    if (open.after >= nonSpaceEnd) {
+      if (append === "") {
+        // dangling opener at the end: hide it (and the whitespace before it)
+        let cut = open.start
+        while (cut > 0 && (text.charCodeAt(cut - 1) === 0x20 || text.charCodeAt(cut - 1) === 0x09)) cut--
+        strip = n - cut
+        limit = cut
+        if (nonSpaceEnd > limit) {
+          nonSpaceEnd = limit
+          while (nonSpaceEnd > 0 && isSpace(text.charCodeAt(nonSpaceEnd - 1))) nonSpaceEnd--
+        }
+      }
       continue
     }
-    if (after.trim().length === 0) continue
     append += String.fromCharCode(open.ch).repeat(open.len)
   }
 
@@ -209,11 +230,6 @@ export function computeTailHeal(input: string): TailHeal {
   }
 
   return compose(heal, { strip, append })
-}
-
-function findLast(stack: Open[], ch: number): number {
-  for (let k = stack.length - 1; k >= 0; k--) if (stack[k]!.ch === ch) return k
-  return -1
 }
 
 export function applyTailHeal(text: string, heal: TailHeal): string {

@@ -1,5 +1,4 @@
 import { BlockParser, BNode, splitTableRow } from "./blocks"
-import { unescapeString } from "./entities"
 import { applyTailHeal, computeTailHeal, type TailHeal } from "./heal"
 import { renderBlockKindToHtml } from "./html"
 import { parseInlines, type ReferenceDef, type RefMap } from "./inline"
@@ -128,7 +127,6 @@ export class PatchmarkStream {
       math: options.math ?? true,
       heal: options.heal ?? true,
       holdPendingMarkers: options.holdPendingMarkers ?? true,
-      flatListBlocks: options.flatListBlocks ?? false,
       settleOnComplete: options.settleOnComplete ?? true,
       groupHtmlBlocks: options.groupHtmlBlocks ?? false,
       renderHtml: options.renderHtml ?? false,
@@ -562,7 +560,7 @@ export class PatchmarkStream {
     const last = children[children.length - 1]
     const openChild = last && last.open ? last : null
     const openIndex = openChild ? children.length - 1 : -1
-    if (this.settledNodes >= (openChild ? openIndex : children.length) && !openChild && !visible) {
+    if (this.settledNodes >= children.length && !visible) {
       return { blocks: [], refmap: null, refsAdded: [] }
     }
 
@@ -710,7 +708,7 @@ export class PatchmarkStream {
   }
 
   private convert(node: BNode, ctx: ConvertContext): BlockKind | null {
-    const persistent = ctx.cacheable && !node.open && !isForkNode(node)
+    const persistent = ctx.cacheable && !node.open && !node.forked
     if (persistent) {
       const hit = this.cache.get(node)
       if (hit && hit.version === ctx.refmap.size) {
@@ -733,8 +731,8 @@ export class PatchmarkStream {
       gfm: this.options.gfm,
       math: this.options.math,
       defs: ctx.refmap as ReadonlyMap<string, ReferenceDef>,
-      onUsedRef: (label) => ctx.used.add(label),
-      onUnresolvedRef: (label) => ctx.unresolved.add(label),
+      usedRefs: ctx.used,
+      unresolvedRefs: ctx.unresolved,
     })
   }
 
@@ -753,13 +751,13 @@ export class PatchmarkStream {
       case "thematic_break":
         return { type: "hr" }
       case "code_block": {
-        const literal = node.open ? codeLiteralSoFar(node) : node.literal
-        const info = node.open && node.isFenced ? unescapeInfo(node.content) : node.info
+        const literal = node.literal
+        const info = node.info
         const words = info ? info.split(/\s+/) : []
         const language = words[0] || undefined
         const meta = language ? info.slice(info.indexOf(language) + language.length).trim() || undefined : undefined
         // an indented code block is complete only once the persistent parser has closed it
-        const complete = node.isFenced ? node.fenceClosed : !node.open && !node.forked
+        const complete = node.isFenced ? node.fenceClosed : !node.forked
         const keepTrailingNewline = ctx.inTail && node.isFenced && !complete && !ctx.partialLine
         const source = !keepTrailingNewline && literal.endsWith("\n") ? literal.slice(0, -1) : literal
         const defaultHtmlLiteral = source ? (source.endsWith("\n") && !complete ? source : `${source}\n`) : ""
@@ -779,28 +777,26 @@ export class PatchmarkStream {
         }
       }
       case "html_block":
-        return { type: "html_block", raw: node.open ? node.content.replace(/\n$/, "") : node.literal }
-      case "math_block": {
-        const literal = node.open ? node.content.slice(node.content.indexOf("\n") + 1) : node.literal
+        return { type: "html_block", raw: node.literal }
+      case "math_block":
         return {
           type: "math",
-          source: literal.trim(),
+          source: node.literal.trim(),
           delimiter: node.mathDelimiter === "$" ? "dollar" : "double-dollar",
           complete: node.mathClosed,
         }
-      }
       case "block_quote": {
         const blocks: BlockKind[] = []
         for (const child of node.children) {
           const kind = this.convert(child, ctx)
           if (kind) blocks.push(kind)
         }
-        return { type: "blockquote", inlines: [], blocks }
+        return { type: "blockquote", blocks }
       }
       case "list": {
         const ld = node.listData!
         const version = ctx.cacheable ? ctx.refmap.size : -1
-        const memo = node.listMemo
+        const memo = node.listMemo!
         if (version < 0 || memo.version !== version) {
           memo.version = version
           memo.items = []
@@ -810,7 +806,7 @@ export class PatchmarkStream {
         }
         const ch = node.children
         let closedPrefix = ch.length
-        while (closedPrefix > 0 && (ch[closedPrefix - 1]!.open || ch[closedPrefix - 1]!.forked)) closedPrefix--
+        while (closedPrefix > 0 && ch[closedPrefix - 1]!.forked) closedPrefix--
         if (memo.count > closedPrefix) {
           memo.items.length = closedPrefix
           memo.count = closedPrefix
@@ -834,14 +830,10 @@ export class PatchmarkStream {
           items,
         }
       }
-      case "item": {
-        const item = this.convertItem(node, ctx)
-        return { type: "blockquote", inlines: [], blocks: item.blocks }
-      }
       case "table": {
         const width = node.header.length
         const version = ctx.cacheable ? ctx.refmap.size : -1
-        const memo = node.tableMemo
+        const memo = node.tableMemo!
         if (version < 0 || memo.version !== version) {
           memo.version = version
           memo.headers = null
@@ -882,12 +874,13 @@ export class PatchmarkStream {
         return { type: "table", align: node.align, headers, rows }
       }
       case "document":
+      case "item":
         return null
     }
   }
 
   private convertItemCached(item: BNode, ctx: ConvertContext): ListItemNode {
-    if (!ctx.cacheable || item.open || item.forked) return this.convertItem(item, ctx)
+    if (!ctx.cacheable || item.forked) return this.convertItem(item, ctx)
     const version = ctx.refmap.size
     const hit = this.itemCache.get(item)
     if (hit && hit.version === version) {
@@ -951,25 +944,6 @@ function htmlBalance(node: BNode): number {
     balance += m[1] ? -1 : 1
   }
   return balance
-}
-
-function isForkNode(node: BNode): boolean {
-  return node.forked
-}
-
-function codeLiteralSoFar(node: BNode): string {
-  if (!node.isFenced) {
-    const lines = node.content.split("\n")
-    while (lines.length > 0 && /^[ \t]*$/.test(lines[lines.length - 1]!)) lines.pop()
-    return lines.length > 0 ? lines.join("\n") + "\n" : ""
-  }
-  const nl = node.content.indexOf("\n")
-  return nl < 0 ? "" : node.content.slice(nl + 1)
-}
-
-function unescapeInfo(content: string): string {
-  const nl = content.indexOf("\n")
-  return unescapeString((nl < 0 ? content : content.slice(0, nl)).trim())
 }
 
 function unescapePipes(cell: string): string {

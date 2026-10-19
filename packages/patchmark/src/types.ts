@@ -1,13 +1,13 @@
-export type MathDelimiter = "dollar" | "double-dollar" | "paren" | "bracket"
+export type MathDelimiter = "dollar" | "double-dollar" | "paren"
 
 export type InlineNode =
   | { type: "text"; text: string }
   | { type: "strong"; children: InlineNode[] }
   | { type: "em"; children: InlineNode[] }
   | { type: "del"; children: InlineNode[] }
-  | { type: "code"; text: string; isFilePath?: boolean; isUrl?: boolean }
+  | { type: "code"; text: string }
   | { type: "math"; source: string; delimiter: MathDelimiter; display: boolean }
-  | { type: "link"; href: string; title?: string; children: InlineNode[]; pending?: boolean }
+  | { type: "link"; href: string; title?: string; children: InlineNode[] }
   | { type: "image"; src: string; alt: string; title?: string; children?: InlineNode[] }
   | { type: "html_inline"; raw: string }
   | { type: "br" }
@@ -50,13 +50,12 @@ export type BlockKind =
   | {
       type: "math"
       source: string
-      delimiter: "double-dollar" | "dollar" | "bracket"
+      delimiter: "double-dollar" | "dollar"
       complete: boolean
     }
   | {
       type: "blockquote"
-      inlines: InlineNode[]
-      blocks?: BlockKind[]
+      blocks: BlockKind[]
     }
   | {
       type: "list"
@@ -65,16 +64,6 @@ export type BlockKind =
       start?: number
       tight: boolean
       items: ListItemNode[]
-    }
-  | {
-      type: "list_item"
-      ordered: boolean
-      marker: string
-      start?: number
-      level: number
-      checked?: boolean | null
-      inlines: InlineNode[]
-      blocks?: BlockKind[]
     }
   | {
       type: "table"
@@ -93,12 +82,6 @@ export type BlockKind =
       /** Consecutive top-level blocks kept together because an HTML block opened a tag a later block closes */
       type: "group"
       blocks: BlockKind[]
-    }
-  | {
-      type: "image"
-      alt: string
-      src: string
-      title?: string
     }
 
 export interface MarkdownBlock {
@@ -152,9 +135,7 @@ export interface StreamOptions {
   heal?: boolean
   /** Hold bare trailing block markers (-, ##, 1., >) until their first word arrives (default: true) */
   holdPendingMarkers?: boolean
-  /** @deprecated Ignored: lists are always kept whole, as CommonMark requires */
-  flatListBlocks?: boolean
-  /** @deprecated Ignored: top-level blocks settle exactly when CommonMark closes them */
+  /** Settle top-level blocks as soon as CommonMark closes them, or wait until a later visible block begins (default: true) */
   settleOnComplete?: boolean
   /**
    * Keep an HTML block that opens a tag (e.g. `<details>`) together with the following blocks up to the block that

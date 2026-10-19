@@ -28,6 +28,27 @@ export interface ListData {
   markerOffset: number
 }
 
+export interface TableMemo {
+  version: number
+  headers: unknown[] | null
+  rows: unknown[]
+  rawRows: string[]
+  used: Set<string>
+  unresolved: Set<string>
+}
+
+export interface ListMemo {
+  version: number
+  items: unknown[]
+  count: number
+  used: Set<string>
+  unresolved: Set<string>
+  tightChecked: number
+}
+
+const EMPTY_ALIGN: TableAlign[] = []
+const EMPTY_STRINGS: string[] = []
+
 export class BNode {
   type: BlockType
   parent: BNode | null = null
@@ -47,29 +68,13 @@ export class BNode {
   htmlBlockType = 0
   /** paragraph whose whole content was reference definitions; renders nothing */
   defsOnly = false
-  align: TableAlign[] = []
-  header: string[] = []
-  rows: string[] = []
-  /** parsed table cells per row (shared with forks), keyed by the row text and the refmap version */
-  rowCache: Map<string, { version: number; cells: unknown; used: string[]; unresolved: string[] }> = new Map()
+  align: TableAlign[] = EMPTY_ALIGN
+  header: string[] = EMPTY_STRINGS
+  rows: string[] = EMPTY_STRINGS
   /** shared memo across forks of an open table so streaming flushes only convert newly added rows */
-  tableMemo: {
-    version: number
-    headers: unknown[] | null
-    rows: unknown[]
-    rawRows: string[]
-    used: Set<string>
-    unresolved: Set<string>
-  } = { version: -1, headers: null, rows: [], rawRows: [], used: new Set(), unresolved: new Set() }
+  tableMemo: TableMemo | null = null
   /** shared memo across forks of an open list so streaming flushes only convert newly closed/open items */
-  listMemo: {
-    version: number
-    items: unknown[]
-    count: number
-    used: Set<string>
-    unresolved: Set<string>
-    tightChecked: number
-  } = { version: -1, items: [], count: 0, used: new Set(), unresolved: new Set(), tightChecked: 0 }
+  listMemo: ListMemo | null = null
   mathDelimiter = ""
   mathClosed = false
   mathLines = 0
@@ -111,7 +116,6 @@ export class BNode {
     copy.align = this.align
     copy.header = this.header
     copy.rows = this.rows
-    copy.rowCache = this.rowCache
     copy.tableMemo = this.tableMemo
     copy.listMemo = this.listMemo
     copy.mathDelimiter = this.mathDelimiter
@@ -144,9 +148,6 @@ const reHtmlBlockOpen: RegExp[] = [
 
 const reHtmlBlockClose: RegExp[] = [/./, /<\/(?:script|pre|textarea|style)>/i, /-->/, /\?>/, />/, /\]\]>/]
 
-const reThematicBreak = /^(?:\*[ \t]*){3,}$|^(?:_[ \t]*){3,}$|^(?:-[ \t]*){3,}$/
-const reMaybeSpecial = /^[#`~*+_=<>0-9-]/
-const reMaybeSpecialExt = /^[#`~*+_=<>0-9|:$-]/
 const reNonSpace = /[^ \t\f\v\r\n]/
 const reBulletListMarker = /^[*+-]/
 const reOrderedListMarker = /^(\d{1,9})([.)])/
@@ -159,6 +160,40 @@ const reTableDelimiterRow = /^\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)*\|?[
 const isBlank = (s: string) => !reNonSpace.test(s)
 const isSpaceOrTab = (c: number) => c === C_SPACE || c === C_TAB
 const peek = (ln: string, pos: number) => (pos < ln.length ? ln.charCodeAt(pos) : -1)
+
+function isThematicBreak(ln: string, start: number): boolean {
+  const marker = peek(ln, start)
+  if (marker !== 0x2a /* * */ && marker !== 0x5f /* _ */ && marker !== 0x2d /* - */) return false
+  let count = 0
+  for (let i = ln.length - 1; i >= start; i--) {
+    const c = ln.charCodeAt(i)
+    if (c === marker) count++
+    else if (c !== C_SPACE && c !== C_TAB) return false
+  }
+  return count >= 3
+}
+
+function isMaybeSpecial(c: number, ext: boolean): boolean {
+  switch (c) {
+    case 0x23: // #
+    case 0x60: // `
+    case 0x7e: // ~
+    case 0x2a: // *
+    case 0x2b: // +
+    case 0x5f: // _
+    case 0x3d: // =
+    case 0x3c: // <
+    case 0x3e: // >
+    case 0x2d: // -
+      return true
+    case 0x7c: // |
+    case 0x3a: // :
+    case 0x24: // $
+      return ext
+    default:
+      return c >= 0x30 && c <= 0x39
+  }
+}
 
 function endsWithBlankLine(block: BNode, next: BNode | undefined): boolean {
   return next !== undefined && block.endLine !== next.startLine - 1
@@ -236,15 +271,21 @@ export class BlockParser {
   /** refmap entries added since construction/fork (labels), so a fork can report new definitions */
   refsAdded: string[] = []
 
-  constructor(options: ParserOptions, disallowMath: Set<number> = new Set(), serialCounter = { n: 0 }) {
+  constructor(
+    options: ParserOptions,
+    disallowMath: Set<number> = new Set(),
+    serialCounter = { n: 0 },
+    doc?: BNode,
+    refmap?: RefMap,
+  ) {
     this.options = options
     this.disallowMath = disallowMath
     this.serialCounter = serialCounter
-    this.doc = new BNode("document", 1, this.serialCounter.n++)
+    this.doc = doc ?? new BNode("document", 1, this.serialCounter.n++)
     this.tip = this.doc
     this.oldtip = this.doc
     this.lastMatchedContainer = this.doc
-    this.refmap = new Map()
+    this.refmap = refmap ?? new Map()
   }
 
   forkMode = false
@@ -252,6 +293,12 @@ export class BlockParser {
 
   newNode(type: BlockType, startLine: number): BNode {
     const node = new BNode(type, startLine, this.serialCounter.n++)
+    if (type === "list") {
+      node.listMemo = { version: -1, items: [], count: 0, used: new Set(), unresolved: new Set(), tightChecked: 0 }
+    } else if (type === "table") {
+      node.rows = []
+      node.tableMemo = { version: -1, headers: null, rows: [], rawRows: [], used: new Set(), unresolved: new Set() }
+    }
     if (this.forkMode) node.forked = true
     return node
   }
@@ -261,12 +308,10 @@ export class BlockParser {
    * nodes are shared and never mutated. The fork's document holds just the open top-level child (if any).
    */
   fork(): BlockParser {
-    const f = new BlockParser(this.options, this.disallowMath, this.serialCounter)
-    f.lineNumber = this.lineNumber
-    f.refmap = this.refmap
-    f.forkMode = true
     const doc = this.doc.shallowClone(false)
-    f.doc = doc
+    const f = new BlockParser(this.options, this.disallowMath, this.serialCounter, doc, this.refmap)
+    f.lineNumber = this.lineNumber
+    f.forkMode = true
     let src = this.doc
     let dst = doc
     while (src !== this.tip) {
@@ -458,7 +503,8 @@ export class BlockParser {
     switch (block.type) {
       case "list": {
         const items = block.children
-        const start = block.listData!.tight ? Math.max(0, block.listMemo.tightChecked - 1) : items.length
+        const memo = block.listMemo!
+        const start = block.listData!.tight ? Math.max(0, memo.tightChecked - 1) : items.length
         outer: for (let i = start; i < items.length; i++) {
           const item = items[i]!
           if (i + 1 < items.length && endsWithBlankLine(item, items[i + 1])) {
@@ -474,7 +520,7 @@ export class BlockParser {
           }
         }
         if (block.listData!.tight && items.length > 1 && !block.forked) {
-          block.listMemo.tightChecked = Math.max(block.listMemo.tightChecked, items.length - 1)
+          memo.tightChecked = Math.max(memo.tightChecked, items.length - 1)
         }
         block.endLine = block.lastChild!.endLine
         break
@@ -561,7 +607,11 @@ export class BlockParser {
       case 1: {
         // ATX heading
         let match: RegExpMatchArray | null
-        if (!this.indented && (match = this.currentLine.slice(this.nextNonspace).match(reATXHeadingMarker))) {
+        if (
+          !this.indented &&
+          peek(this.currentLine, this.nextNonspace) === 0x23 &&
+          (match = this.currentLine.slice(this.nextNonspace).match(reATXHeadingMarker))
+        ) {
           this.advanceNextNonspace()
           this.advanceOffset(match[0].length, false)
           this.closeUnmatchedBlocks()
@@ -578,8 +628,13 @@ export class BlockParser {
       }
       case 2: {
         // fenced code block
+        const first = peek(this.currentLine, this.nextNonspace)
         let match: RegExpMatchArray | null
-        if (!this.indented && (match = this.currentLine.slice(this.nextNonspace).match(reCodeFence))) {
+        if (
+          !this.indented &&
+          (first === 0x60 || first === 0x7e) &&
+          (match = this.currentLine.slice(this.nextNonspace).match(reCodeFence))
+        ) {
           const fenceLength = match[0].length
           this.closeUnmatchedBlocks()
           const c = this.addChild("code_block", this.nextNonspace)
@@ -614,10 +669,12 @@ export class BlockParser {
       }
       case 4: {
         // setext heading
+        const first = peek(this.currentLine, this.nextNonspace)
         let match: RegExpMatchArray | null
         if (
           !this.indented &&
           container.type === "paragraph" &&
+          (first === 0x3d || first === 0x2d) &&
           (match = this.currentLine.slice(this.nextNonspace).match(reSetextHeadingLine))
         ) {
           this.closeUnmatchedBlocks()
@@ -645,7 +702,7 @@ export class BlockParser {
       }
       case 5: {
         // thematic break
-        if (!this.indented && reThematicBreak.test(this.currentLine.slice(this.nextNonspace))) {
+        if (!this.indented && isThematicBreak(this.currentLine, this.nextNonspace)) {
           this.closeUnmatchedBlocks()
           this.addChild("thematic_break", this.nextNonspace)
           this.advanceOffset(this.currentLine.length - this.offset, false)
@@ -687,8 +744,13 @@ export class BlockParser {
       }
       case 6: {
         // list item
+        const first = peek(this.currentLine, this.nextNonspace)
         let data: ListData | null
-        if ((!this.indented || container.type === "list") && (data = this.parseListMarker(container))) {
+        if (
+          (!this.indented || container.type === "list") &&
+          (first === 0x2a || first === 0x2b || first === 0x2d || (first >= 0x30 && first <= 0x39)) &&
+          (data = this.parseListMarker(container))
+        ) {
           this.closeUnmatchedBlocks()
           if (this.tip.type !== "list" || !listsMatch(container.listData, data)) {
             container = this.addChild("list", this.nextNonspace)
@@ -765,21 +827,23 @@ export class BlockParser {
 
   findNextNonspace() {
     const currentLine = this.currentLine
+    const len = currentLine.length
     let i = this.offset
     let cols = this.column
-    let c: string
-    while ((c = currentLine.charAt(i)) !== "") {
-      if (c === " ") {
+    while (i < len) {
+      const c = currentLine.charCodeAt(i)
+      if (c === C_SPACE) {
         i++
         cols++
-      } else if (c === "\t") {
+      } else if (c === C_TAB) {
         i++
         cols += 4 - (cols % 4)
       } else {
         break
       }
     }
-    this.blank = c === "\n" || c === "\r" || c === ""
+    const c = i < len ? currentLine.charCodeAt(i) : -1
+    this.blank = c === 0x0a || c === 0x0d || c === -1
     this.nextNonspace = i
     this.nextNonspaceColumn = cols
     this.indent = this.nextNonspaceColumn - this.column
@@ -814,10 +878,10 @@ export class BlockParser {
 
     let matchedLeaf =
       container.type !== "paragraph" && container.type !== "table" && this.acceptsLines(container.type)
-    const special = this.options.gfm || this.options.math ? reMaybeSpecialExt : reMaybeSpecial
+    const ext = this.options.gfm || this.options.math
     while (!matchedLeaf) {
       this.findNextNonspace()
-      if (!this.indented && !special.test(ln.slice(this.nextNonspace))) {
+      if (!this.indented && !isMaybeSpecial(peek(ln, this.nextNonspace), ext)) {
         this.advanceNextNonspace()
         break
       }

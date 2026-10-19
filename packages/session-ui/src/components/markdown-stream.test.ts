@@ -262,15 +262,11 @@ describe("markdown stream", () => {
     ])
 
     const next = project(first, `${first.text}\n   const z = 3`, true)
-    expect(next.patches).toEqual([
+    expect(next.blocks).toEqual([
       {
-        op: "replace",
-        index: 0,
-        block: {
-          raw: "1. First step\n   ```ts\n   const x = 1\n   ```\n2. Second step\n   ```ts\n   const y = 2\n   const z = 3",
-          src: "1. First step\n   ```ts\n   const x = 1\n   ```\n2. Second step\n   ```ts\n   const y = 2\n   const z = 3",
-          mode: "live",
-        },
+        raw: "1. First step\n   ```ts\n   const x = 1\n   ```\n2. Second step\n   ```ts\n   const y = 2\n   const z = 3",
+        src: "1. First step\n   ```ts\n   const x = 1\n   ```\n2. Second step\n   ```ts\n   const y = 2\n   const z = 3",
+        mode: "live",
       },
     ])
   })

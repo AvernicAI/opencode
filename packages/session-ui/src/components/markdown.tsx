@@ -587,8 +587,6 @@ export function Markdown(
   const completedCode = new Map<string, Extract<RenderedBlock, { mode: "code" }>>()
   const settledMarkdown = new Map<string, Exclude<RenderedBlock, { mode: "code" }>>()
   let renderedBlocks: RenderedBlock[] = []
-  let previousLocalFileExists: MarkdownLocalFileExists | undefined
-  let previousSessionLinks = false
   let streamed = false
 
   const [projection] = createResource(
@@ -800,16 +798,11 @@ export function Markdown(
     const sessionLinks = !!markdown?.openSession
     const localFileExists = markdown?.localFileExists
 
-    const sameContext =
-      previousSessionLinks === sessionLinks && previousLocalFileExists === localFileExists
-
     content.forEach((block, index) => {
-      if (sameContext && renderedBlocks[index] === block && container.children[index] instanceof HTMLDivElement) return
+      if (renderedBlocks[index] === block && container.children[index] instanceof HTMLDivElement) return
       updateBlock(container, index, block, labels, sessionLinks, localFileExists)
     })
     renderedBlocks = content
-    previousSessionLinks = sessionLinks
-    previousLocalFileExists = localFileExists
 
     while (container.children.length > content.length) {
       const child = container.lastElementChild

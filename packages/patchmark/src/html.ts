@@ -17,37 +17,6 @@ export function escapeHtml(text: string): string {
   return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")
 }
 
-export function renderInlinesToPlainText(nodes: ReadonlyArray<InlineNode>): string {
-  let out = ""
-  for (const node of nodes) {
-    switch (node.type) {
-      case "text":
-      case "code":
-        out += node.text
-        break
-      case "strong":
-      case "em":
-      case "del":
-      case "link":
-        out += renderInlinesToPlainText(node.children)
-        break
-      case "image":
-        out += node.children ? renderInlinesToPlainText(node.children) : node.alt
-        break
-      case "math":
-        out += node.source
-        break
-      case "br":
-        out += "\n"
-        break
-      case "html_inline":
-        out += node.raw
-        break
-    }
-  }
-  return out
-}
-
 /** Image alt text the way commonmark.js renders it: tags suppressed, text escaped, raw HTML kept */
 function renderAlt(nodes: ReadonlyArray<InlineNode>): string {
   let out = ""
@@ -240,11 +209,7 @@ class HtmlWriter {
         this.cr()
         this.out("<blockquote>")
         this.cr()
-        if (kind.blocks) {
-          for (const child of kind.blocks) this.block(child, false)
-        } else if (kind.inlines.length > 0) {
-          this.block({ type: "paragraph", inlines: kind.inlines }, false)
-        }
+        for (const child of kind.blocks) this.block(child, false)
         this.cr()
         this.out("</blockquote>")
         this.cr()
@@ -259,24 +224,6 @@ class HtmlWriter {
         this.cr()
         this.out(`</${tag}>`)
         this.cr()
-        return
-      }
-      case "list_item": {
-        const item: ListItemNode = {
-          ...(kind.checked !== undefined ? { checked: kind.checked } : {}),
-          blocks: [{ type: "paragraph", inlines: kind.inlines }, ...(kind.blocks ?? [])],
-        }
-        this.block(
-          {
-            type: "list",
-            ordered: kind.ordered,
-            marker: kind.marker,
-            ...(kind.start !== undefined ? { start: kind.start } : {}),
-            tight: true,
-            items: [item],
-          },
-          false,
-        )
         return
       }
       case "table": {
@@ -325,13 +272,6 @@ class HtmlWriter {
       case "group":
         for (const child of kind.blocks) this.block(child, false)
         return
-      case "image": {
-        const titleAttr = kind.title ? ` title="${escapeHtml(kind.title)}"` : ""
-        this.cr()
-        this.out(`<p><img src="${escapeHtml(kind.src)}" alt="${escapeHtml(kind.alt)}"${titleAttr} /></p>`)
-        this.cr()
-        return
-      }
     }
   }
 
