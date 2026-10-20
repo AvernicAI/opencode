@@ -116,6 +116,7 @@ export class PatchmarkStream {
   private settledMeta: SettledMeta[] = []
   private waiting = new Map<string, Set<number>>()
   private refsSeen = 0
+  private provisionalRefs: string[] = []
   private nextId = 0
   private cache = new WeakMap<BNode, { version: number; result: Converted }>()
   private itemCache = new WeakMap<BNode, { version: number; item: ListItemNode; used: Set<string>; unresolved: Set<string> }>()
@@ -151,6 +152,7 @@ export class PatchmarkStream {
     this.settledMeta = []
     this.waiting = new Map()
     this.refsSeen = 0
+    this.provisionalRefs = []
     this.cache = new WeakMap()
     this.itemCache = new WeakMap()
   }
@@ -186,7 +188,7 @@ export class PatchmarkStream {
   /** Declarative update: prefix appends are incremental; anything else re-parses and patches the difference */
   update(text: string, opts: { streaming?: boolean } = {}): StreamFrame {
     const streaming = opts.streaming ?? true
-    if (this.finished || !this.hasPrefix(text)) {
+    if (this.finished || !text.startsWith(this.text)) {
       if (this.finished && text === this.text) return this.emptyFrame()
       return this.rebuild(text, streaming)
     }
@@ -194,22 +196,6 @@ export class PatchmarkStream {
     this.partial += text.slice(this.text.length)
     this.text = text
     return this.step(streaming)
-  }
-
-  private hasPrefix(text: string): boolean {
-    const prev = this.text
-    const len = prev.length
-    if (len === 0) return true
-    if (text.length < len) return false
-    if (len <= 4096) return text.startsWith(prev)
-    if (text.slice(len - 512, len) !== prev.slice(len - 512, len)) return false
-    if (text.slice(0, 512) !== prev.slice(0, 512)) return false
-    const stride = (len - 512) >> 3
-    for (let i = 1; i < 8; i++) {
-      const at = i * stride
-      if (text.slice(at, at + 64) !== prev.slice(at, at + 64)) return false
-    }
-    return true
   }
 
   private emptyFrame(): StreamFrame {
@@ -311,8 +297,9 @@ export class PatchmarkStream {
     const children = this.parser.doc.children
     while (this.settledNodes < children.length) {
       const first = this.settledNodes
-      const last = this.groupEnd(children, first)
-      if (last < 0) break
+      const grouped = this.groupEnd(children, first)
+      if (grouped < 0 && streaming) break
+      const last = grouped < 0 ? children.length - 1 : grouped
       const node = children[first]!
       const isLast = last === children.length - 1
       const early =
@@ -437,8 +424,15 @@ export class PatchmarkStream {
 
   private backfillRefs(patches: BlockPatch[], tailRefmap: RefMap | null, tailRefsAdded: string[]) {
     const added = this.parser.refsAdded
-    if (this.refsSeen >= added.length && tailRefsAdded.length === 0) return
+    const provisional = this.provisionalRefs
+    this.provisionalRefs = tailRefsAdded
+    if (this.refsSeen >= added.length && tailRefsAdded.length === 0 && provisional.length === 0) return
     const touched = new Set<number>()
+    // A fork's definitions can disappear as the partial line grows or at EOF.
+    for (const label of provisional) {
+      const set = this.waiting.get(label)
+      if (set) for (const idx of set) touched.add(idx)
+    }
     for (let i = this.refsSeen; i < added.length; i++) {
       const set = this.waiting.get(added[i]!)
       if (!set) continue
@@ -937,7 +931,9 @@ const RE_TAG = /<(\/?)([A-Za-z][A-Za-z0-9-]*)\b[^>]*?(\/?)>/g
 /** Open minus closed (non-void) tags in an HTML block */
 function htmlBalance(node: BNode): number {
   if (node.type !== "html_block") return 0
-  const html = node.open ? node.content : node.literal
+  // Comments, declarations and raw-text blocks already have their own terminators.
+  if (node.htmlBlockType <= 5) return 0
+  const html = (node.open ? node.content : node.literal).replace(/<!--[\s\S]*?(?:-->|$)/g, "")
   let balance = 0
   for (const m of html.matchAll(RE_TAG)) {
     if (m[3] || VOID_TAGS.has(m[2]!.toLowerCase())) continue

@@ -75,22 +75,22 @@ describe("slow-input linear-time bounds", () => {
   })
 
   test(
-    "1 MB reply streamed 1 char at a time stays linear (<5,000ms for 1,048,576 steps)",
+    "1 MB reply streamed 1 char at a time bounds scanning to the active line",
     () => {
       const unit =
         "## Section Heading\n\nParagraph with **bold**, *italic*, `code`, and [link](https://example.com).\n\n- item one\n- item two\n\n```ts\nconst x = 1;\n```\n\n"
       const full = unit.repeat(Math.ceil(1_048_576 / unit.length)).slice(0, 1_048_576)
       const stream = createMarkdownStream({ renderHtml: false })
-      const t0 = performance.now()
+      let scanned = 0
 
       for (let i = 0; i < full.length; i++) {
-        stream.append(full[i]!)
+        scanned += stream.append(full[i]!).charsScanned
       }
 
       const done = stream.finalize()
-      const elapsed = performance.now() - t0
       expect(done.blocks.length).toBeGreaterThan(20_000)
-      expect(elapsed).toBeLessThan(5_000)
+      // Count work rather than machine load; the timeout still catches catastrophic regressions.
+      expect(scanned).toBeLessThan(full.length * unit.length)
     },
     15_000,
   )

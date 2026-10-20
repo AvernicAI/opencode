@@ -15,6 +15,7 @@ export type Projection = {
 }
 
 const streams = new WeakMap<Projection, PatchmarkStream>()
+
 const projectedBlocks = new WeakMap<MarkdownBlock, Block>()
 
 function createStream() {
@@ -31,6 +32,7 @@ function createStream() {
 
 function toBlock(block: MarkdownBlock): Block {
   const cached = projectedBlocks.get(block)
+
   if (cached) return cached
 
   if (block.kind.type === "code" || block.kind.type === "mermaid") {
@@ -47,6 +49,7 @@ function toBlock(block: MarkdownBlock): Block {
     if (block.kind.complete || block.status === "settled") item.complete = true
 
     projectedBlocks.set(block, item)
+
     return item
   }
 
@@ -59,7 +62,9 @@ function toBlock(block: MarkdownBlock): Block {
     src: base + defs,
     mode,
   }
+
   projectedBlocks.set(block, item)
+
   return item
 }
 
@@ -69,10 +74,12 @@ export function stream(text: string, live: boolean): Block[] {
 
 export function project(previous: Projection | undefined, text: string, live: boolean): Projection {
   if (!previous && !live) return completedProjection(text)
+
   if (previous && live && previous.text === text) return previous
 
   const instance = (previous ? streams.get(previous) : undefined) ?? createStream()
   const blocks = instance.update(text, { streaming: live }).blocks.map(toBlock)
+
   const next: Projection = {
     text,
     blocks: blocks.length === 0 ? [{ raw: text, src: text, mode: live ? "live" : "full" }] : blocks,
