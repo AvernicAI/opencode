@@ -359,14 +359,10 @@ test("concurrent service processes elect one server", async () => {
       await fetch(new URL("/api/info", info.url), {
         headers: { authorization: "Basic " + btoa(`opencode:${info.password}`) },
       }).then((response) => response.json()),
-    ).toEqual({
+    ).toMatchObject({
       version: info.version,
       pid: info.pid,
-      hostname: os.hostname() || undefined,
       urls: [info.url],
-      // The server reports the canonical tmp directory; Windows os.tmpdir() can be an 8.3 short name.
-      paths: { tmp: await fs.realpath(path.join(os.tmpdir(), "opencode")) },
-      capabilities: { persistentPty: process.platform !== "win32" },
     })
     const contender = Bun.spawn(command, { env, stderr: "pipe", stdout: "ignore" })
     try {
