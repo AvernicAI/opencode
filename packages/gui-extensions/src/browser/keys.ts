@@ -15,8 +15,9 @@ export type PageShortcut = {
 const shellKeys = ["t", "w", "n", "1", "2", "3", "4", "5", "6", "7", "8", "9", ",", "\\"]
 
 // Shifted chords with the platform's modifier that belong to the app shell rather than the page: reopening a tab,
-// opening or closing a window, toggling the side panel, opening the command palette, or running session commands.
-const shellShiftKeys = ["t", "w", "n", "r", "p", "l", "e", "o", "s"]
+// toggling the side panel, opening the command palette, or running session commands. New Window and Close Window
+// (⇧⌘N, ⇧⌘W) stay unclaimed: only their menu accelerators handle them, and claiming a chord also blocks the menu.
+const shellShiftKeys = ["t", "r", "p", "l", "e", "o", "s"]
 
 /**
  * The letter a page key press names, as the app's keybinds read it: the layout's character, so Dvorak's C is "c"

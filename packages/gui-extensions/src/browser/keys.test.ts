@@ -47,8 +47,6 @@ test("forwards browser and shell shortcuts while leaving page editing, find, rel
     ["mod", ",", true, ","],
     ["mod", "\\", false, "\\"],
     ["mod+shift", "T", true, "t"],
-    ["mod+shift", "W", true, "w"],
-    ["mod+shift", "N", false, "n"],
     ["mod+shift", "R", true, "r"],
     ["mod+shift", "R", false, "r"],
     ["mod+shift", "P", true, "p"],
@@ -60,6 +58,11 @@ test("forwards browser and shell shortcuts while leaving page editing, find, rel
     ["ctrl+shift", "Tab", false, "Tab"],
     ["ctrl", "`", true, "`"],
     ["ctrl", "`", false, "`"],
+    // New Window and Close Window belong to native menu accelerators, which a claimed chord would block.
+    ["mod+shift", "W", true, undefined],
+    ["mod+shift", "W", false, undefined],
+    ["mod+shift", "N", true, undefined],
+    ["mod+shift", "N", false, undefined],
     // In-page editor chords (link/command menu, bold, italic, save) stay with the page.
     ["mod", "k", true, undefined],
     ["mod", "k", false, undefined],
