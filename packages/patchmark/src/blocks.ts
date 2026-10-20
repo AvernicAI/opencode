@@ -550,15 +550,13 @@ export class BlockParser {
         break
       case "paragraph": {
         let pos: number
-        let hasDefs = false
         while (
           peek(block.content, 0) === C_OPEN_BRACKET &&
           (pos = this.parseRef(block.content, block.startLine))
         ) {
           block.content = block.content.slice(pos)
-          hasDefs = true
         }
-        if (hasDefs && isBlank(block.content)) block.defsOnly = true
+        if (isBlank(block.content)) block.defsOnly = true
         break
       }
       case "math_block":

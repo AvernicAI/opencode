@@ -228,9 +228,10 @@ export class PatchmarkStream {
       previous[keep]!.status === "settled" &&
       next[keep]!.status === "settled" &&
       previous[keep]!.raw === next[keep]!.raw &&
-      previous[keep]!.start === next[keep]!.start
+      previous[keep]!.start === next[keep]!.start &&
+      previous[keep]!.defs === next[keep]!.defs
     ) {
-      next[keep] = { ...next[keep]!, id: previous[keep]!.id }
+      next[keep] = previous[keep]!
       keep++
     }
     for (let i = keep; i < next.length; i++) next[i] = { ...next[i]!, id: this.nextId++ }
@@ -926,7 +927,7 @@ export class PatchmarkStream {
 }
 
 const VOID_TAGS = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"])
-const RE_TAG = /<(\/?)([A-Za-z][A-Za-z0-9-]*)\b[^>]*?(\/?)>/g
+const RE_TAG = /<(\/?)([A-Za-z][A-Za-z0-9-]*)\b(?:[^>"']|"[^"]*"|'[^']*')*?(\/?)>/g
 
 /** Open minus closed (non-void) tags in an HTML block */
 function htmlBalance(node: BNode): number {

@@ -206,4 +206,20 @@ describe("patchmark streaming parser", () => {
     expect(done.blocks[0]!.raw).toContain("</details>")
     expect(done.blocks[1]!.raw).toBe("After.\n")
   })
+
+  test("omits reference-only paragraphs before a thematic break and patches ref changes on rebuild", () => {
+    const stream = createMarkdownStream({ renderHtml: true })
+    const first = stream.update("[x][r]\n\nOther\n\n[r]: /one\n---\n", { streaming: true })
+    expect(renderBlocksToHtml(first.blocks)).toBe('<p><a href="/one">x</a></p>\n<p>Other</p>\n<hr />\n')
+
+    const next = stream.update("[x][r]\n\nOther\n\n[r]: /two\n---\n", { streaming: true })
+    const replica = [...first.blocks]
+    for (const p of next.patches) {
+      if (p.op === "append") replica.push(p.block)
+      else if (p.op === "replace" || p.op === "finalize") replica[p.index] = p.block
+      else if (p.op === "truncate") replica.length = p.keepCount
+    }
+    expect(replica).toEqual([...next.blocks])
+    expect(renderBlocksToHtml(replica)).toBe('<p><a href="/two">x</a></p>\n<p>Other</p>\n<hr />\n')
+  })
 })

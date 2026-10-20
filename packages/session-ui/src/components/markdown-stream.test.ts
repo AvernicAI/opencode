@@ -3,32 +3,56 @@ import { canReusePendingBlock } from "./markdown-projection"
 import { project, stream } from "./markdown-stream"
 
 describe("markdown stream", () => {
-  test.each(["<div>\n\nWorld", "<details>\n\nWorld", "<!-- <div> -->\n\nWorld"])(
-    "preserves unfinished HTML groups on completion: %s",
-    (tail) => {
-      const text = `Hello\n\n${tail}`
-      const live = project(undefined, text, true)
-      const done = project(live, text, false)
-      expect(done.blocks.map((block) => block.raw).join("")).toBe(text)
-      expect(done.blocks.every((block) => block.mode === "full")).toBe(true)
+  test.each([
+    "<div>\n\nWorld",
+    "<details>\n\nWorld",
+    "<!-- <div> -->\n\nWorld",
+    "<pre>\n<div>\n</pre>\n\nWorld",
+    '<div data-tip="a > <span>">\n</div>\n\nWorld',
+  ])("preserves unfinished and quoted-attribute HTML groups on completion: %s", (tail) => {
+    const text = `Hello\n\n${tail}`
+    const live = project(undefined, text, true)
+    const done = project(live, text, false)
+    expect(done.blocks.map((block) => block.raw).join("")).toBe(text)
+    expect(done.blocks.every((block) => block.mode === "full")).toBe(true)
+  })
+
+  test("ignores > and /> inside quoted HTML attributes when grouping blocks", () => {
+    const closed = project(undefined, '<div data-tip="a > <span>">\n</div>\n\nSettled\n\nTail', true)
+    expect(closed.blocks.map((block) => [block.raw, block.mode])).toEqual([
+      ['<div data-tip="a > <span>">\n</div>\n\n', "full"],
+      ["Settled\n\n", "full"],
+      ["Tail", "live"],
+    ])
+
+    const grouped = project(undefined, '<div data-icon="/>">\n\n**Inside**\n\n</div>', false)
+    expect(grouped.blocks).toEqual([
+      {
+        raw: '<div data-icon="/>">\n\n**Inside**\n\n</div>',
+        src: '<div data-icon="/>">\n\n**Inside**\n\n</div>',
+        mode: "full",
+      },
+    ])
+  })
+
+  test.each(["[x][r]\n\nOther\n\n[r]: /ok invalid", "[x][r]\n\nOther\n\n[r]: /ok\n| --- |\n"])(
+    "retracts an invalidated provisional reference definition: %s",
+    (text) => {
+      let current = project(undefined, "", true)
+
+      for (let i = 1; i <= text.length; i++) current = project(current, text.slice(0, i), true)
+      expect(current.blocks[0]!.src).toBe("[x][r]\n\n")
+      const done = project(current, text, false)
+      expect(done.blocks[0]!.src).toBe("[x][r]\n\n")
     },
   )
-
-  test("retracts an invalidated provisional reference definition", () => {
-    const text = "[x][r]\n\nOther\n\n[r]: /ok invalid"
-    let current = project(undefined, "", true)
-
-    for (let i = 1; i <= text.length; i++) current = project(current, text.slice(0, i), true)
-    expect(current.blocks[0]!.src).toBe("[x][r]\n\n")
-    const done = project(current, text, false)
-    expect(done.blocks[0]!.src).toBe("[x][r]\n\n")
-  })
 
   test("rebuilds long messages when an unsampled interior character changes", () => {
     const text = "Start\n\n" + "x".repeat(6000) + "\n\nTail"
     const live = project(undefined, text, true)
     const edited = text.slice(0, 1000) + "Y" + text.slice(1001)
     const next = project(live, edited, true)
+    expect(next.blocks[0]).toBe(live.blocks[0])
     expect(next.blocks.map((block) => block.raw).join("")).toBe(edited)
     expect(project(next, edited, false).blocks.map((block) => block.raw).join("")).toBe(edited)
   })
